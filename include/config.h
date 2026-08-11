@@ -1,4 +1,29 @@
 #pragma once
+#include <Arduino.h>
+
+// --- Logs de diagnostico ---
+// En 0 no se compila ni una sola llamada a Serial. Aca eso importa mas de
+// lo habitual: esta placa usa el USB nativo del S3 como puerto serie, y
+// cuando no hay ningun terminal conectado del otro lado cada escritura se
+// queda esperando su timeout antes de descartar el dato. En uso normal (a
+// bateria, sin PC) eso es tiempo de CPU tirado a la basura.
+// Poner en 1 para volver a habilitar todo el diagnostico de golpe (o
+// compilar con -DENABLE_DEBUG_LOG=1 sin tocar este archivo).
+#ifndef ENABLE_DEBUG_LOG
+    #define ENABLE_DEBUG_LOG 0
+#endif
+
+#if ENABLE_DEBUG_LOG
+    #define DBG_BEGIN() Serial.begin(115200)
+    #define DBG_PRINTF(...) Serial.printf(__VA_ARGS__)
+    #define DBG_PRINTLN(x) Serial.println(x)
+    #define DBG_PRINT(x) Serial.print(x)
+#else
+    #define DBG_BEGIN() ((void)0)
+    #define DBG_PRINTF(...) ((void)0)
+    #define DBG_PRINTLN(x) ((void)0)
+    #define DBG_PRINT(x) ((void)0)
+#endif
 
 // --- I2S hacia el MAX98357A (ampli Class-D con DAC I2S integrado) ---
 // Elegidos para evitar pines de strapping del S3 (0, 3, 45, 46) y el rango
@@ -16,6 +41,12 @@
 // --- Portal cautivo ---
 #define AP_SSID "EnaBot-Setup"
 #define AP_PASSWORD "" // red abierta; poner clave de 8+ caracteres si se desea
+
+// El portal NO arranca solo: hay que encender la placa con el boton
+// apretado. En uso normal la radio queda apagada de entrada, que es lo que
+// mas bateria ahorra (y de paso evita la interferencia con el ampli).
+// Una vez levantado, se apaga solo pasado este tiempo.
+#define PORTAL_TIMEOUT_MS (10UL * 60UL * 1000UL) // 10 minutos
 
 // --- Almacenamiento del audio ---
 // 4 slots independientes ("/audio0.wav" .. "/audio3.wav"), cada uno con el

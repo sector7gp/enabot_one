@@ -1,6 +1,7 @@
 #include "I2sOut.h"
 #include <Arduino.h>
 #include <driver/i2s_std.h>
+#include "config.h"
 
 static i2s_chan_handle_t txHandle = nullptr;
 static uint32_t currentRate = 0;
@@ -51,7 +52,7 @@ bool i2sOutBegin(int bclkPin, int lrcPin, int doutPin, uint32_t sampleRate) {
 
     esp_err_t err = i2s_new_channel(&chanCfg, &txHandle, nullptr);
     if (err != ESP_OK) {
-        Serial.printf("i2sOutBegin: i2s_new_channel fallo (%s)\n", esp_err_to_name(err));
+        DBG_PRINTF("i2sOutBegin: i2s_new_channel fallo (%s)\n", esp_err_to_name(err));
         return false;
     }
 
@@ -60,7 +61,7 @@ bool i2sOutBegin(int bclkPin, int lrcPin, int doutPin, uint32_t sampleRate) {
 
     err = i2s_channel_init_std_mode(txHandle, &stdCfg);
     if (err != ESP_OK) {
-        Serial.printf("i2sOutBegin: init_std_mode fallo (%s)\n", esp_err_to_name(err));
+        DBG_PRINTF("i2sOutBegin: init_std_mode fallo (%s)\n", esp_err_to_name(err));
         return false;
     }
 
@@ -85,7 +86,7 @@ bool i2sOutStart(uint32_t sampleRate) {
 
         esp_err_t err = i2s_channel_reconfig_std_clock(txHandle, &clkCfg);
         if (err != ESP_OK) {
-            Serial.printf("i2sOutStart: reconfig a %u Hz fallo (%s)\n", sampleRate,
+            DBG_PRINTF("i2sOutStart: reconfig a %u Hz fallo (%s)\n", sampleRate,
                           esp_err_to_name(err));
             return false;
         }
@@ -94,7 +95,7 @@ bool i2sOutStart(uint32_t sampleRate) {
 
     esp_err_t err = i2s_channel_enable(txHandle);
     if (err != ESP_OK) {
-        Serial.printf("i2sOutStart: channel_enable fallo (%s)\n", esp_err_to_name(err));
+        DBG_PRINTF("i2sOutStart: channel_enable fallo (%s)\n", esp_err_to_name(err));
         return false;
     }
     channelEnabled = true;

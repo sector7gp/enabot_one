@@ -57,9 +57,14 @@ puerto UART0 en vez del USB-C vas a necesitar un adaptador USB-serie aparte.
 
 ## Uso
 
-1. Al bootear, el ESP32 crea una red WiFi abierta llamada `EnaBot-Setup`.
+1. **Encendé la placa manteniendo el botón apretado.** Recién ahí el ESP32
+   crea la red WiFi abierta `EnaBot-Setup`. En un arranque normal (sin el
+   botón) la radio no se enciende nunca: solo botón → audio.
 2. Conectate desde el celular/PC. Debería aparecer el popup de "portal
    cautivo" solo; si no, abrí `http://192.168.4.1/` a mano.
+   El portal **se apaga solo a los 10 minutos** (`PORTAL_TIMEOUT_MS` en
+   `config.h`) y apaga la radio con él. Para volver a entrar hay que
+   reiniciar de nuevo con el botón apretado.
 3. El portal muestra **4 audios independientes** ("Audio 1".."Audio 4"),
    cada uno con su propio formulario. Elegí cualquier grabación de voz del
    celular (m4a de Voice Memos en iPhone, mp3, wav, lo que sea) de hasta 20
@@ -143,18 +148,46 @@ todo ese problema.
   compilacion. Por eso `I2sOut.cpp` asigna los campos de a uno, con los
   mismos valores que usaria el macro para ESP32-S3.
 
+## Consumo y bateria
+
+Tres cosas mantienen al equipo lo mas quieto posible cuando no se lo usa:
+
+- **La radio WiFi no se enciende en el arranque normal.** Es de lejos lo
+  que mas consume; solo se levanta si se arranco con el boton apretado, y
+  aun asi se apaga sola a los 10 minutos (`captivePortalEnd()` baja el
+  servidor, el DNS y deja la radio en `WIFI_OFF`).
+- **El canal I2S esta apagado salvo mientras suena un audio**, asi que el
+  MAX98357A no queda consumiendo ni metiendo ruido entre reproduccion y
+  reproduccion.
+- **Los logs por serial estan compilados afuera** (ver abajo), y el `loop()`
+  cede CPU en vez de girar en vacio cuando no hay portal que atender.
+
+Si hiciera falta estirar mas la bateria, el proximo paso seria light sleep
+con wakeup por GPIO en el boton, pero eso ya es otro nivel de cambio.
+
 ## Diagnostico por serial
 
-Al arrancar, el firmware imprime informacion util para debug:
+Todo el logging esta detras de `ENABLE_DEBUG_LOG` en
+[`include/config.h`](include/config.h), **en 0 por defecto**: con el flag
+apagado no se compila ni una llamada a `Serial`.
+
+Esto no es solo prolijidad. La placa usa el USB nativo del S3 como puerto
+serie, y cuando no hay ningun terminal conectado del otro lado cada
+escritura se queda esperando su timeout antes de descartar el dato — o sea
+que en uso normal (a bateria, sin PC) los logs cuestan tiempo de CPU real.
+
+Para reactivarlo, poner el flag en 1 o compilar con
+`-DENABLE_DEBUG_LOG=1` (ambas variantes se verificaron que compilan). Con
+el flag encendido, al arrancar se imprime:
 
 - **Causa del ultimo reset** (`POWERON`, `PANIC`, `BROWNOUT`, ...). Si
   aparece `BROWNOUT`, el problema es la alimentacion, no el firmware.
 - **Volcado de LittleFS**: espacio total/usado/libre y el tamaño de cada
   slot. Sirve para confirmar de un vistazo si los 4 audios estan
   realmente guardados.
-- Durante la reproduccion se loguea el slot, y si un WAV es rechazado se
-  imprime exactamente que validacion fallo (formato, canales, bits,
-  sample rate...).
+- Si el portal arranco o no, y por que.
+- Durante la reproduccion, el slot elegido; y si un WAV es rechazado, que
+  validacion exactamente fallo (formato, canales, bits, sample rate...).
 
 ## Si el WiFi/portal deja de aparecer
 

@@ -45,27 +45,27 @@ bool parseWavHeader(File &f, WavInfo &info) {
     }
 
     if (!haveFmt || !haveData) {
-        Serial.printf("parseWavHeader: falta chunk fmt/data (fmt=%d data=%d)\n", haveFmt, haveData);
+        DBG_PRINTF("parseWavHeader: falta chunk fmt/data (fmt=%d data=%d)\n", haveFmt, haveData);
         return false;
     }
     if (info.audioFormat != 1) {
-        Serial.printf("parseWavHeader: audioFormat=%u (esperado 1=PCM)\n", info.audioFormat);
+        DBG_PRINTF("parseWavHeader: audioFormat=%u (esperado 1=PCM)\n", info.audioFormat);
         return false;
     }
     if (info.numChannels != 1) {
-        Serial.printf("parseWavHeader: numChannels=%u (esperado 1=mono)\n", info.numChannels);
+        DBG_PRINTF("parseWavHeader: numChannels=%u (esperado 1=mono)\n", info.numChannels);
         return false;
     }
     if (info.bitsPerSample != 8 && info.bitsPerSample != 16) {
-        Serial.printf("parseWavHeader: bitsPerSample=%u (esperado 8 o 16)\n", info.bitsPerSample);
+        DBG_PRINTF("parseWavHeader: bitsPerSample=%u (esperado 8 o 16)\n", info.bitsPerSample);
         return false;
     }
     if (info.sampleRate == 0 || info.sampleRate > AUDIO_MAX_SAMPLE_RATE) {
-        Serial.printf("parseWavHeader: sampleRate=%u (max %u)\n", info.sampleRate, (unsigned)AUDIO_MAX_SAMPLE_RATE);
+        DBG_PRINTF("parseWavHeader: sampleRate=%u (max %u)\n", info.sampleRate, (unsigned)AUDIO_MAX_SAMPLE_RATE);
         return false;
     }
     if (info.dataSize == 0) {
-        Serial.println("parseWavHeader: dataSize=0");
+        DBG_PRINTLN("parseWavHeader: dataSize=0");
         return false;
     }
 
@@ -74,7 +74,7 @@ bool parseWavHeader(File &f, WavInfo &info) {
 
 bool AudioPlayer::play(const char *path) {
     bool exists = LittleFS.exists(path);
-    Serial.printf("AudioPlayer::play(%s) exists=%d\n", path, exists);
+    DBG_PRINTF("AudioPlayer::play(%s) exists=%d\n", path, exists);
     if (!exists) return false;
 
     // Si ya hay algo sonando, lo cortamos primero: un boton fisico debe
@@ -86,7 +86,7 @@ bool AudioPlayer::play(const char *path) {
 
     TaskHandle_t handle = nullptr;
     // Prioridad un poco por encima de la tarea normal de Arduino: alcanza
-    // porque write_blocking() bloquea con primitivas reales de FreeRTOS
+    // porque i2s_channel_write() bloquea con primitivas reales de FreeRTOS
     // (no hay espera activa aca), asi que no hace falta prioridad maxima
     // ni ceder CPU a mano para evitar el Task Watchdog.
     BaseType_t ok = xTaskCreatePinnedToCore(
@@ -114,24 +114,24 @@ void AudioPlayer::taskFunc(void *param) {
     self->_stopRequested = false;
 
     File f = LittleFS.open(self->_path, FILE_READ);
-    Serial.printf("taskFunc: abriendo %s, ok=%d, size=%u\n", self->_path, (bool)f, f ? f.size() : 0);
+    DBG_PRINTF("taskFunc: abriendo %s, ok=%d, size=%u\n", self->_path, (bool)f, f ? f.size() : 0);
     WavInfo info;
     if (!f || !parseWavHeader(f, info)) {
-        Serial.println("taskFunc: parseWavHeader fallo, no reproduzco");
+        DBG_PRINTLN("taskFunc: parseWavHeader fallo, no reproduzco");
         if (f) f.close();
         self->_playing = false;
         vTaskDelete(nullptr);
         return;
     }
 
-    Serial.printf("taskFunc: WAV valido, sampleRate=%u bits=%u dataSize=%u dataOffset=%u\n",
+    DBG_PRINTF("taskFunc: WAV valido, sampleRate=%u bits=%u dataSize=%u dataOffset=%u\n",
                   info.sampleRate, info.bitsPerSample, info.dataSize, info.dataOffset);
 
     // Habilita el I2S solo mientras dura la reproduccion, ajustando el reloj
     // a este clip (cada slot puede tener su propio sample rate). En reposo el
     // canal queda apagado: sin BCLK/LRC el MAX98357A no consume ni hace ruido.
     if (!i2sOutStart(info.sampleRate)) {
-        Serial.println("taskFunc: no pude habilitar el I2S");
+        DBG_PRINTLN("taskFunc: no pude habilitar el I2S");
         f.close();
         self->_playing = false;
         vTaskDelete(nullptr);

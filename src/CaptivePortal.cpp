@@ -230,9 +230,11 @@ void captivePortalBegin() {
     WiFi.mode(WIFI_AP);
     bool configOk = WiFi.softAPConfig(AP_IP, AP_IP, AP_SUBNET);
     bool apOk = WiFi.softAP(AP_SSID, (strlen(AP_PASSWORD) > 0) ? AP_PASSWORD : nullptr);
-    Serial.printf("softAPConfig: %s, softAP: %s, IP: %s\n",
-                  configOk ? "OK" : "FALLO", apOk ? "OK" : "FALLO",
-                  WiFi.softAPIP().toString().c_str());
+    DBG_PRINTF("softAPConfig: %s, softAP: %s, IP: %s\n",
+               configOk ? "OK" : "FALLO", apOk ? "OK" : "FALLO",
+               WiFi.softAPIP().toString().c_str());
+    (void)configOk;
+    (void)apOk;
 
     dnsServer.start(53, "*", AP_IP);
 
@@ -248,4 +250,12 @@ void captivePortalBegin() {
 void captivePortalLoop() {
     dnsServer.processNextRequest();
     server.handleClient();
+}
+
+void captivePortalEnd() {
+    server.stop();
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true); // true = ademas apaga el AP
+    WiFi.mode(WIFI_OFF);
+    DBG_PRINTLN("Portal apagado, radio WiFi off.");
 }
