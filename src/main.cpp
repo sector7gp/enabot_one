@@ -41,6 +41,17 @@ void setup() {
     I2S.setDataPin(I2S_DOUT_PIN);
     if (!I2S.begin(I2S_PHILIPS_MODE, AUDIO_CLIENT_SAMPLE_RATE, 16)) {
         Serial.println("Error inicializando I2S");
+    } else {
+        // I2S.begin() ya deja BCLK/LRC corriendo, pero el pin de datos (DIN)
+        // recien se conecta al periferico en el primer write_blocking().
+        // Sin esto, el MAX98357A ve un clock valido con datos flotando
+        // hasta la primera reproduccion real, y hace ruido de fondo todo
+        // ese tiempo. Mandamos silencio ya mismo para "primar" la conexion
+        // antes de que haya nada que pueda sonar mal.
+        int16_t silence[128] = {0}; // 64 frames estereo (128 valores L/R)
+        for (int i = 0; i < 10; i++) {
+            I2S.write_blocking(silence, sizeof(silence));
+        }
     }
 
     if (!LittleFS.begin(true)) {
