@@ -1,9 +1,10 @@
 #include <Arduino.h>
-#include <I2S.h>
+#include <esp_system.h>
 #include <LittleFS.h>
 #include "config.h"
 #include "AudioPlayer.h"
 #include "CaptivePortal.h"
+#include "I2sOut.h"
 
 static AudioPlayer player;
 
@@ -13,6 +14,29 @@ static uint8_t nextSlot = 0;
 
 void IRAM_ATTR onButtonPress() {
     buttonFlag = true;
+}
+
+// Lista el contenido de LittleFS al arrancar: sirve para ver de un vistazo
+// si los 4 slots estan realmente guardados y con que tamano, y cuanto
+// espacio libre queda (4 clips de 20s a 16kHz son ~2.5MB y la particion
+// tiene ~2.6MB, asi que el margen es finito).
+static void dumpFilesystem() {
+    size_t total = LittleFS.totalBytes();
+    size_t used = LittleFS.usedBytes();
+    Serial.printf("LittleFS: total=%u used=%u libre=%u\n", total, used, total - used);
+
+    File root = LittleFS.open("/");
+    if (!root) {
+        Serial.println("LittleFS: no pude abrir la raiz");
+        return;
+    }
+    File entry = root.openNextFile();
+    if (!entry) Serial.println("LittleFS: (vacio, ningun archivo)");
+    while (entry) {
+        Serial.printf("  %s  %u bytes\n", entry.name(), (unsigned)entry.size());
+        entry = root.openNextFile();
+    }
+    root.close();
 }
 
 // Reproduce el siguiente slot en la secuencia (avanza siempre, aunque el
@@ -33,33 +57,37 @@ static void playNextSlot() {
 void setup() {
     Serial.begin(115200);
 
+    // Por que arrancamos: si aparece BROWNOUT (o resets repetidos justo
+    // despues de reproducir) el problema es la alimentacion, no el firmware.
+    esp_reset_reason_t reason = esp_reset_reason();
+    const char *reasonStr = "otro";
+    switch (reason) {
+        case ESP_RST_POWERON:  reasonStr = "POWERON (arranque normal)"; break;
+        case ESP_RST_SW:       reasonStr = "SW (reset por software)"; break;
+        case ESP_RST_PANIC:    reasonStr = "PANIC (crash del firmware)"; break;
+        case ESP_RST_INT_WDT:  reasonStr = "INT_WDT (watchdog de interrupciones)"; break;
+        case ESP_RST_TASK_WDT: reasonStr = "TASK_WDT (watchdog de tareas)"; break;
+        case ESP_RST_WDT:      reasonStr = "WDT (otro watchdog)"; break;
+        case ESP_RST_BROWNOUT: reasonStr = "BROWNOUT (cayo la tension!)"; break;
+        case ESP_RST_EXT:      reasonStr = "EXT (reset externo)"; break;
+        default: break;
+    }
+    Serial.printf("Causa del ultimo reset: %s\n", reasonStr);
+
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onButtonPress, FALLING);
-
-    I2S.setSckPin(I2S_BCLK_PIN);
-    I2S.setFsPin(I2S_LRC_PIN);
-    I2S.setDataPin(I2S_DOUT_PIN);
-    if (!I2S.begin(I2S_PHILIPS_MODE, AUDIO_CLIENT_SAMPLE_RATE, 16)) {
-        Serial.println("Error inicializando I2S");
-    } else {
-        // I2S.begin() ya deja BCLK/LRC corriendo, pero el pin de datos (DIN)
-        // recien se conecta al periferico en el primer write_blocking().
-        // Sin esto, el MAX98357A ve un clock valido con datos flotando
-        // hasta la primera reproduccion real, y hace ruido de fondo todo
-        // ese tiempo. Mandamos silencio ya mismo para "primar" la conexion
-        // antes de que haya nada que pueda sonar mal.
-        int16_t silence[128] = {0}; // 64 frames estereo (128 valores L/R)
-        for (int i = 0; i < 10; i++) {
-            I2S.write_blocking(silence, sizeof(silence));
-        }
-    }
 
     if (!LittleFS.begin(true)) {
         Serial.println("Error montando LittleFS");
     }
+    dumpFilesystem();
 
-    player.begin(&I2S);
     captivePortalBegin();
+
+    if (!i2sOutBegin(I2S_BCLK_PIN, I2S_LRC_PIN, I2S_DOUT_PIN, AUDIO_CLIENT_SAMPLE_RATE)) {
+        Serial.println("Error inicializando I2S");
+    }
+    player.begin();
 
     Serial.println("Listo.");
     Serial.print("Conectate a la red WiFi: ");

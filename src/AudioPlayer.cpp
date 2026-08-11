@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <string.h>
 #include "config.h"
+#include "I2sOut.h"
 
 String audioSlotPath(uint8_t slot) {
     return "/audio" + String(slot) + ".wav";
@@ -43,18 +44,38 @@ bool parseWavHeader(File &f, WavInfo &info) {
         }
     }
 
-    if (!haveFmt || !haveData) return false;
-    if (info.audioFormat != 1) return false;                     // solo PCM sin comprimir
-    if (info.numChannels != 1) return false;                     // solo mono
-    if (info.bitsPerSample != 8 && info.bitsPerSample != 16) return false;
-    if (info.sampleRate == 0 || info.sampleRate > AUDIO_MAX_SAMPLE_RATE) return false;
-    if (info.dataSize == 0) return false;
+    if (!haveFmt || !haveData) {
+        Serial.printf("parseWavHeader: falta chunk fmt/data (fmt=%d data=%d)\n", haveFmt, haveData);
+        return false;
+    }
+    if (info.audioFormat != 1) {
+        Serial.printf("parseWavHeader: audioFormat=%u (esperado 1=PCM)\n", info.audioFormat);
+        return false;
+    }
+    if (info.numChannels != 1) {
+        Serial.printf("parseWavHeader: numChannels=%u (esperado 1=mono)\n", info.numChannels);
+        return false;
+    }
+    if (info.bitsPerSample != 8 && info.bitsPerSample != 16) {
+        Serial.printf("parseWavHeader: bitsPerSample=%u (esperado 8 o 16)\n", info.bitsPerSample);
+        return false;
+    }
+    if (info.sampleRate == 0 || info.sampleRate > AUDIO_MAX_SAMPLE_RATE) {
+        Serial.printf("parseWavHeader: sampleRate=%u (max %u)\n", info.sampleRate, (unsigned)AUDIO_MAX_SAMPLE_RATE);
+        return false;
+    }
+    if (info.dataSize == 0) {
+        Serial.println("parseWavHeader: dataSize=0");
+        return false;
+    }
 
     return true;
 }
 
 bool AudioPlayer::play(const char *path) {
-    if (!LittleFS.exists(path)) return false;
+    bool exists = LittleFS.exists(path);
+    Serial.printf("AudioPlayer::play(%s) exists=%d\n", path, exists);
+    if (!exists) return false;
 
     // Si ya hay algo sonando, lo cortamos primero: un boton fisico debe
     // interrumpir e ir directo al siguiente audio, no ignorar la apretada.
@@ -93,9 +114,25 @@ void AudioPlayer::taskFunc(void *param) {
     self->_stopRequested = false;
 
     File f = LittleFS.open(self->_path, FILE_READ);
+    Serial.printf("taskFunc: abriendo %s, ok=%d, size=%u\n", self->_path, (bool)f, f ? f.size() : 0);
     WavInfo info;
     if (!f || !parseWavHeader(f, info)) {
+        Serial.println("taskFunc: parseWavHeader fallo, no reproduzco");
         if (f) f.close();
+        self->_playing = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    Serial.printf("taskFunc: WAV valido, sampleRate=%u bits=%u dataSize=%u dataOffset=%u\n",
+                  info.sampleRate, info.bitsPerSample, info.dataSize, info.dataOffset);
+
+    // Habilita el I2S solo mientras dura la reproduccion, ajustando el reloj
+    // a este clip (cada slot puede tener su propio sample rate). En reposo el
+    // canal queda apagado: sin BCLK/LRC el MAX98357A no consume ni hace ruido.
+    if (!i2sOutStart(info.sampleRate)) {
+        Serial.println("taskFunc: no pude habilitar el I2S");
+        f.close();
         self->_playing = false;
         vTaskDelete(nullptr);
         return;
@@ -133,25 +170,26 @@ void AudioPlayer::taskFunc(void *param) {
         }
 
         // Bloquea (espera FreeRTOS real, no espera activa) hasta que haya
-        // lugar en el buffer DMA. Con esto nunca se pierden muestras por
-        // buffer lleno, a diferencia de write() que descarta en silencio.
-        self->_i2s->write_blocking(stereoBuf, samplesGot * 2 * sizeof(int16_t));
+        // lugar en el buffer DMA, asi no se pierden muestras.
+        i2sOutWrite(stereoBuf, samplesGot * 2 * sizeof(int16_t));
 
         remaining -= got;
     }
     f.close();
 
-    // Cola de silencio: si no seguimos escribiendo, el DMA repite en loop
-    // el ultimo bloque que le mandamos. Sin esto se escucharia la cola del
-    // audio repitiendose de fondo hasta la proxima reproduccion.
+    // Cola de silencio para que el ampli no quede con el ultimo nivel DC
+    // pegado en la salida al terminar (el canal esta con
+    // auto_clear_after_cb, pero esto ademas cubre el corte por boton).
     const size_t SILENCE_FRAMES = 1600; // 100ms a 16kHz
     memset(stereoBuf, 0, sizeof(stereoBuf));
     size_t silenceLeft = SILENCE_FRAMES;
     while (silenceLeft > 0) {
         size_t chunk = silenceLeft < BUF_SAMPLES ? silenceLeft : BUF_SAMPLES;
-        self->_i2s->write_blocking(stereoBuf, chunk * 2 * sizeof(int16_t));
+        i2sOutWrite(stereoBuf, chunk * 2 * sizeof(int16_t));
         silenceLeft -= chunk;
     }
+
+    i2sOutStop(); // vuelve a dejar el ampli en reposo
 
     self->_playing = false;
     vTaskDelete(nullptr);

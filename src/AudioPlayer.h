@@ -2,7 +2,6 @@
 #include <FS.h>
 #include <WString.h>
 #include <stdint.h>
-#include <I2S.h>
 
 // Ruta del archivo de audio para un slot (0-indexado): "/audio0.wav", etc.
 String audioSlotPath(uint8_t slot);
@@ -23,7 +22,8 @@ bool parseWavHeader(File &f, WavInfo &info);
 
 class AudioPlayer {
 public:
-    void begin(I2SClass *i2s) { _i2s = i2s; }
+    // El I2S se inicializa aparte (i2sOutBegin), este objeto solo escribe.
+    void begin() {}
 
     // Si el archivo existe y es valido: corta la reproduccion en curso (si
     // hay una) y arranca esta en una tarea aparte. Bloquea brevemente
@@ -38,7 +38,6 @@ private:
     static void taskFunc(void *param);
     void stopCurrent();
 
-    I2SClass *_i2s = nullptr;
     volatile bool _playing = false;
     volatile bool _stopRequested = false;
     char _path[32] = {0};
