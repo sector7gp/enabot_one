@@ -64,9 +64,10 @@ void loop() {
         uint32_t now = millis();
         if (now - lastButtonMs > BUTTON_DEBOUNCE_MS) {
             lastButtonMs = now;
-            if (!player.isPlaying()) {
-                playNextSlot();
-            }
+            // player.play() corta la reproduccion en curso (si hay) antes
+            // de arrancar la nueva, asi que no hace falta chequear
+            // isPlaying() aca: cada apretada interrumpe y pasa al siguiente.
+            playNextSlot();
         }
     }
 }

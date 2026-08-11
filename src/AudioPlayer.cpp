@@ -54,8 +54,11 @@ bool parseWavHeader(File &f, WavInfo &info) {
 }
 
 bool AudioPlayer::play(const char *path) {
-    if (_playing) return false;
     if (!LittleFS.exists(path)) return false;
+
+    // Si ya hay algo sonando, lo cortamos primero: un boton fisico debe
+    // interrumpir e ir directo al siguiente audio, no ignorar la apretada.
+    stopCurrent();
 
     strncpy(_path, path, sizeof(_path) - 1);
     _path[sizeof(_path) - 1] = '\0';
@@ -71,9 +74,23 @@ bool AudioPlayer::play(const char *path) {
     return ok == pdPASS;
 }
 
+void AudioPlayer::stopCurrent() {
+    if (!_playing) return;
+    _stopRequested = true;
+    // Espera corta y acotada: la tarea revisa _stopRequested entre bloques
+    // de ~256 muestras (~16ms a 16kHz), asi que esto tarda como mucho eso
+    // mas lo que falte de la escritura I2S en curso — no toda la duracion
+    // del audio.
+    while (_playing) {
+        vTaskDelay(1);
+    }
+    _stopRequested = false;
+}
+
 void AudioPlayer::taskFunc(void *param) {
     AudioPlayer *self = static_cast<AudioPlayer *>(param);
     self->_playing = true;
+    self->_stopRequested = false;
 
     File f = LittleFS.open(self->_path, FILE_READ);
     WavInfo info;
@@ -92,7 +109,7 @@ void AudioPlayer::taskFunc(void *param) {
     uint8_t rawBuf[BUF_SAMPLES * 2];     // hasta 16 bit por muestra, mono
     int16_t stereoBuf[BUF_SAMPLES * 2];  // interleaved L/R (mismo valor en ambos)
 
-    while (remaining >= bytesPerSample) {
+    while (remaining >= bytesPerSample && !self->_stopRequested) {
         size_t bytesToRead = BUF_SAMPLES * bytesPerSample;
         if (bytesToRead > remaining) bytesToRead = remaining - (remaining % bytesPerSample);
         if (bytesToRead == 0) break;

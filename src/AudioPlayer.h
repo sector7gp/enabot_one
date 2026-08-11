@@ -25,16 +25,21 @@ class AudioPlayer {
 public:
     void begin(I2SClass *i2s) { _i2s = i2s; }
 
-    // Dispara la reproduccion en una tarea aparte. No bloquea.
-    // Devuelve false si ya esta reproduciendo, si el archivo no existe o es invalido.
+    // Si el archivo existe y es valido: corta la reproduccion en curso (si
+    // hay una) y arranca esta en una tarea aparte. Bloquea brevemente
+    // (unos ms como mucho) solo para esperar a que la tarea anterior
+    // termine de cortar, no por toda la duracion del audio.
+    // Devuelve false si el archivo no existe o es invalido.
     bool play(const char *path);
 
     bool isPlaying() const { return _playing; }
 
 private:
     static void taskFunc(void *param);
+    void stopCurrent();
 
     I2SClass *_i2s = nullptr;
     volatile bool _playing = false;
+    volatile bool _stopRequested = false;
     char _path[32] = {0};
 };
