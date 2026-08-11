@@ -2,7 +2,7 @@
 #include <FS.h>
 #include <WString.h>
 #include <stdint.h>
-#include "MCP4725Fast.h"
+#include <I2S.h>
 
 // Ruta del archivo de audio para un slot (0-indexado): "/audio0.wav", etc.
 String audioSlotPath(uint8_t slot);
@@ -23,7 +23,7 @@ bool parseWavHeader(File &f, WavInfo &info);
 
 class AudioPlayer {
 public:
-    void begin(MCP4725Fast *dac) { _dac = dac; }
+    void begin(I2SClass *i2s) { _i2s = i2s; }
 
     // Dispara la reproduccion en una tarea aparte. No bloquea.
     // Devuelve false si ya esta reproduciendo, si el archivo no existe o es invalido.
@@ -34,7 +34,7 @@ public:
 private:
     static void taskFunc(void *param);
 
-    MCP4725Fast *_dac = nullptr;
+    I2SClass *_i2s = nullptr;
     volatile bool _playing = false;
     char _path[32] = {0};
 };

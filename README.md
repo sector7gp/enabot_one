@@ -6,21 +6,22 @@ previamente mediante un portal cautivo por WiFi.
 ## Hardware
 
 - ESP32-S3 Super Mini
-- MCP4725 (DAC I2C 12 bit)
+- MAX98357A (ampli Class-D con DAC I2S integrado — no es un DAC I2C como el
+  MCP4725 que se probo al principio; recibe audio digital por I2S y ya
+  entrega la señal amplificada, no hace falta ampli ni filtro externo)
+- Parlante (segun el breakout del MAX98357A, tipicamente 4-8 Ω)
 - Pulsador
-- Recomendado para escuchar algo: filtro RC pasivo a la salida del MCP4725 +
-  amplificador (ej. PAM8403) + parlante. El MCP4725 no tiene potencia de
-  salida ni filtrado, solo entrega un voltaje analogico escalonado.
 
 ## Conexionado
 
-| MCP4725 | ESP32-S3 Super Mini |
+| MAX98357A | ESP32-S3 Super Mini |
 |---|---|
-| VCC | 3V3 |
+| VIN | 5V (o 3.3V si el breakout lo soporta — revisar su datasheet) |
 | GND | GND |
-| SDA | GPIO8 |
-| SCL | GPIO9 |
-| OUT | -> filtro RC -> entrada del amplificador |
+| BCLK | GPIO5 |
+| LRC | GPIO6 |
+| DIN | GPIO7 |
+| SD (si esta expuesto) | ver nota abajo |
 
 | Boton | ESP32-S3 Super Mini |
 |---|---|
@@ -28,7 +29,17 @@ previamente mediante un portal cautivo por WiFi.
 | Pin 2 | GND |
 
 Los pines estan centralizados en [`include/config.h`](include/config.h) —
-si tu placa tiene otra distribucion, cambialos ahi.
+si tu placa tiene otra distribucion, cambialos ahi. Se eligieron GPIO5/6/7
+por estar libres de: pines de strapping del S3 (0, 3, 45, 46) y el rango
+usado internamente por el flash/PSRAM embebidos de esta placa
+(aproximadamente GPIO26-37, confirmado que esta placa tiene PSRAM via
+`esptool flash_id`) — evitalos si cambias los pines.
+
+**Nota sobre el pin SD/MODE del MAX98357A:** segun como este cableado (a
+GND, a VCC, flotando, o con un divisor resistivo) el chip selecciona si
+reproduce el canal Left, Right, o la mezcla (L+R)/2. El firmware manda el
+mismo valor mono en ambos canales I2S, asi que suena bien sin importar cual
+de esos modos tenga tu breakout en particular — no hace falta averiguarlo.
 
 ## Compilar y flashear
 
@@ -92,33 +103,34 @@ todo ese problema.
 - La particion de la app se redujo a 1.25 MB para hacerle lugar a esto
   (el firmware ocupa ~1 MB, sigue con margen). Si agregás mucho codigo
   nuevo y no compila por espacio, hay que rebalancear `partitions.csv`.
-- El limite real de calidad no es la memoria sino la velocidad del bus I2C hacia el
-  DAC: por eso `AUDIO_MAX_SAMPLE_RATE` en `config.h` rechaza WAVs con
-  sample rate mayor a 16 kHz al subirlos (a esa tasa el "fast mode write"
-  del MCP4725 se sostiene sin problema; mas alto empieza a arriesgar
-  cortes de timing). Si en la practica notás que el audio suena mas
-  lento/grave de lo que grabaste, es sintoma de que el I2C no llega a
-  16kHz en tu cableado particular — bajá `AUDIO_CLIENT_SAMPLE_RATE` a 8000
-  en `config.h`, o probá subir `I2C_CLOCK_HZ` (400kHz hoy, dentro de spec
-  del MCP4725; 1MHz es "Fast Mode Plus" y podria dar problemas de señal en
-  protoboard, probarlo con cuidado).
-- Para audio con mejor calidad a futuro, la alternativa seria un DAC I2S
-  (ej. PCM5102) en vez del MCP4725 por I2C — pero para esta prueba de
-  concepto no hace falta.
-- **Bug de watchdog corregido:** reproducir de forma continua sin ceder
-  CPU (necesario para el timing exacto de las muestras) hace que la tarea
-  idle del core 1 nunca corra, y el Task Watchdog de ESP-IDF resetea la
-  placa a mitad de la reproduccion (~5s por defecto). `AudioPlayer.cpp`
-  cede el CPU 1 tick cada ~200ms de audio para evitarlo (perdida real
-  imperceptible, ~0.5% de tiempo total).
+- El limite de sample rate (16 kHz) ya no viene de un cuello de botella de
+  hardware como con el MCP4725 por I2C — el I2S por DMA aguanta mas sin
+  problema — sino de que la libreria `I2S` de Arduino-ESP32 solo da
+  soporte oficial hasta 16kHz/16bit en `I2S_PHILIPS_MODE` (a mas, avisa
+  por serial que puede sonar con ruido). Se podria probar mas alto subiendo
+  `AUDIO_CLIENT_SAMPLE_RATE`/`AUDIO_MAX_SAMPLE_RATE`, pero eso tambien
+  agranda cada clip — revisar el presupuesto de LittleFS de arriba antes.
+- La reproduccion via I2S usa `write_blocking()`, que espera con
+  primitivas reales de FreeRTOS (no espera activa) hasta que hay lugar en
+  el buffer DMA — a diferencia del MCP4725 por I2C, esto **no necesita**
+  ningun truco para evitar el Task Watchdog: al bloquear "de verdad", la
+  tarea idle corre sola sin que haya que cederle CPU a mano.
 
 ## Estructura
 
 ```
 include/config.h        pines, credenciales del AP, cantidad de slots, limites
-src/MCP4725Fast.h       driver I2C fast-mode para el DAC
-src/AudioPlayer.h/.cpp  parser de WAV + tarea de reproduccion con timing por sample
+lib/I2S/                copia local de la libreria I2S del core (ver nota abajo)
+src/AudioPlayer.h/.cpp  parser de WAV + tarea de reproduccion por I2S (write_blocking)
 src/CaptivePortal.h/.cpp AP + DNS wildcard + servidor web + subida por slot (/upload/N, /audio/N)
 src/main.cpp            setup/loop, boton con debounce + secuencia de slots
 partitions.csv          tabla de particiones (app 1.25MB / littlefs ~2.625MB)
 ```
+
+**Nota sobre `lib/I2S/`:** es una copia de la libreria `I2S` que trae
+Arduino-ESP32 (`framework-arduinoespressif32/libraries/I2S`). Su
+`library.properties` declara `architectures=esp32`, y el Library
+Dependency Finder de PlatformIO la filtra para el target `esp32s3` con esa
+declaracion (aunque el chip la soporta perfectamente) — vendorearla en
+`lib/` evita ese filtro. Si en el futuro PlatformIO/el core arreglan esto,
+se puede borrar `lib/I2S/` y usar la del framework directamente.

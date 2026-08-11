@@ -1,12 +1,10 @@
 #include <Arduino.h>
-#include <Wire.h>
+#include <I2S.h>
 #include <LittleFS.h>
 #include "config.h"
-#include "MCP4725Fast.h"
 #include "AudioPlayer.h"
 #include "CaptivePortal.h"
 
-static MCP4725Fast dac;
 static AudioPlayer player;
 
 static volatile bool buttonFlag = false;
@@ -38,15 +36,18 @@ void setup() {
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onButtonPress, FALLING);
 
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    Wire.setClock(I2C_CLOCK_HZ);
-    dac.begin(MCP4725_ADDR, Wire);
+    I2S.setSckPin(I2S_BCLK_PIN);
+    I2S.setFsPin(I2S_LRC_PIN);
+    I2S.setDataPin(I2S_DOUT_PIN);
+    if (!I2S.begin(I2S_PHILIPS_MODE, AUDIO_CLIENT_SAMPLE_RATE, 16)) {
+        Serial.println("Error inicializando I2S");
+    }
 
     if (!LittleFS.begin(true)) {
         Serial.println("Error montando LittleFS");
     }
 
-    player.begin(&dac);
+    player.begin(&I2S);
     captivePortalBegin();
 
     Serial.println("Listo.");

@@ -1,6 +1,5 @@
 #include "AudioPlayer.h"
 #include <LittleFS.h>
-#include <esp_timer.h>
 #include <string.h>
 #include "config.h"
 
@@ -62,10 +61,12 @@ bool AudioPlayer::play(const char *path) {
     _path[sizeof(_path) - 1] = '\0';
 
     TaskHandle_t handle = nullptr;
-    // Prioridad alta y pineada al core 1 para que el timing de muestreo no
-    // dependa de lo que este haciendo el stack de WiFi (que corre en core 0).
+    // Prioridad un poco por encima de la tarea normal de Arduino: alcanza
+    // porque write_blocking() bloquea con primitivas reales de FreeRTOS
+    // (no hay espera activa aca), asi que no hace falta prioridad maxima
+    // ni ceder CPU a mano para evitar el Task Watchdog.
     BaseType_t ok = xTaskCreatePinnedToCore(
-        taskFunc, "audio_play", 4096, this, configMAX_PRIORITIES - 1, &handle, 1);
+        taskFunc, "audio_play", 4096, this, tskIDLE_PRIORITY + 2, &handle, 1);
 
     return ok == pdPASS;
 }
@@ -86,57 +87,55 @@ void AudioPlayer::taskFunc(void *param) {
     f.seek(info.dataOffset);
     uint32_t remaining = info.dataSize;
     const uint16_t bytesPerSample = info.bitsPerSample / 8;
-    const int64_t periodUs = 1000000LL / info.sampleRate;
 
     const size_t BUF_SAMPLES = 256;
-    uint8_t buf[BUF_SAMPLES * 2]; // hasta 16 bit por muestra
-
-    int64_t nextTick = esp_timer_get_time();
-
-    // Cada cuantas muestras cedemos el CPU un tick (~1ms) a proposito.
-    // Sin esto, esta tarea (prioridad maxima, espera activa) nunca deja
-    // correr a la tarea idle del core 1, y el Task Watchdog de ESP-IDF
-    // termina reseteando la placa a mitad de la reproduccion (por defecto
-    // dispara a los ~5s de idle starvation) — pasaba seguro con clips de
-    // varios segundos. Cada ~200ms de audio perdemos ~1ms real (imperceptible).
-    const uint32_t yieldEverySamples = (info.sampleRate / 5) + 1;
-    size_t sampleIndex = 0;
+    uint8_t rawBuf[BUF_SAMPLES * 2];     // hasta 16 bit por muestra, mono
+    int16_t stereoBuf[BUF_SAMPLES * 2];  // interleaved L/R (mismo valor en ambos)
 
     while (remaining >= bytesPerSample) {
         size_t bytesToRead = BUF_SAMPLES * bytesPerSample;
         if (bytesToRead > remaining) bytesToRead = remaining - (remaining % bytesPerSample);
         if (bytesToRead == 0) break;
 
-        size_t got = f.read(buf, bytesToRead);
+        size_t got = f.read(rawBuf, bytesToRead);
         if (got < bytesPerSample) break;
 
         size_t samplesGot = got / bytesPerSample;
         for (size_t i = 0; i < samplesGot; i++) {
-            uint16_t dacVal;
+            int16_t s;
             if (info.bitsPerSample == 16) {
-                int16_t s = (int16_t)(buf[i * 2] | (buf[i * 2 + 1] << 8));
-                dacVal = (uint16_t)(((int32_t)s + 32768) >> 4); // 16 bit con signo -> 12 bit
+                s = (int16_t)(rawBuf[i * 2] | (rawBuf[i * 2 + 1] << 8));
             } else {
-                dacVal = (uint16_t)buf[i] << 4; // 8 bit sin signo -> 12 bit
+                s = (int16_t)(((int)rawBuf[i] - 128) << 8); // 8 bit sin signo -> 16 bit con signo
             }
-
-            while (esp_timer_get_time() < nextTick) {
-                // espera activa: a estas frecuencias (<=16kHz) el periodo es
-                // de decenas/cientos de us, no vale la pena usar semaforos.
-            }
-            self->_dac->write12(dacVal);
-            nextTick += periodUs;
-
-            if (++sampleIndex % yieldEverySamples == 0) {
-                vTaskDelay(1);
-                nextTick = esp_timer_get_time(); // no arrastrar el hueco del yield como "atraso"
-            }
+            // El MAX98357A puede estar cableado para tomar L, R o (L+R)/2
+            // segun su pin SD/MODE; mandando el mismo valor en ambos
+            // canales suena correcto sin importar cual sea.
+            stereoBuf[i * 2] = s;
+            stereoBuf[i * 2 + 1] = s;
         }
+
+        // Bloquea (espera FreeRTOS real, no espera activa) hasta que haya
+        // lugar en el buffer DMA. Con esto nunca se pierden muestras por
+        // buffer lleno, a diferencia de write() que descarta en silencio.
+        self->_i2s->write_blocking(stereoBuf, samplesGot * 2 * sizeof(int16_t));
 
         remaining -= got;
     }
-
     f.close();
+
+    // Cola de silencio: si no seguimos escribiendo, el DMA repite en loop
+    // el ultimo bloque que le mandamos. Sin esto se escucharia la cola del
+    // audio repitiendose de fondo hasta la proxima reproduccion.
+    const size_t SILENCE_FRAMES = 1600; // 100ms a 16kHz
+    memset(stereoBuf, 0, sizeof(stereoBuf));
+    size_t silenceLeft = SILENCE_FRAMES;
+    while (silenceLeft > 0) {
+        size_t chunk = silenceLeft < BUF_SAMPLES ? silenceLeft : BUF_SAMPLES;
+        self->_i2s->write_blocking(stereoBuf, chunk * 2 * sizeof(int16_t));
+        silenceLeft -= chunk;
+    }
+
     self->_playing = false;
     vTaskDelete(nullptr);
 }
