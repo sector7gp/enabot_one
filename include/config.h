@@ -21,9 +21,13 @@
 #define AP_PASSWORD "" // red abierta; poner clave de 8+ caracteres si se desea
 
 // --- Almacenamiento del audio ---
-#define AUDIO_FILE_PATH "/audio.wav"
-// Tope de seguridad en la subida (la particion littlefs tiene ~1.9MB libres).
-#define AUDIO_MAX_BYTES (1500UL * 1024UL)
+// 4 slots independientes ("/audio0.wav" .. "/audio3.wav"), cada uno con el
+// mismo limite de tamano/duracion. El boton los reproduce en secuencia.
+#define AUDIO_NUM_SLOTS 4
+// Tope de seguridad por archivo: a 16kHz/16bit/20s un clip pesa ~640KB, asi
+// que 700KB da margen sin permitir que un solo slot devore la particion
+// entera (littlefs tiene ~2.6MB repartidos entre los 4 slots).
+#define AUDIO_MAX_BYTES (700UL * 1024UL)
 // Limite de sample rate aceptado: mas alto que esto y el I2C a 400kHz no
 // llega a sostener el ritmo de escritura de forma confiable en fast-mode.
 #define AUDIO_MAX_SAMPLE_RATE 16000

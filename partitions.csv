@@ -1,8 +1,9 @@
 # Tabla de particiones para flash de 4MB (0x400000), sin OTA.
-# app: 2MB (de sobra para Arduino+WiFi+WebServer). littlefs: ~1.9MB para el WAV.
+# app: 1.25MB (el firmware usa ~1MB, deja margen para crecer).
+# littlefs: ~2.625MB para los 4 slots de audio (hasta ~640KB c/u a 16kHz/20s).
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x5000
 otadata,    data, ota,     0xe000,   0x2000
-app0,       app,  ota_0,   0x10000,  0x200000
-spiffs,     data, spiffs,  0x210000, 0x1E0000
+app0,       app,  ota_0,   0x10000,  0x140000
+spiffs,     data, spiffs,  0x150000, 0x2A0000
 coredump,   data, coredump,0x3F0000, 0x10000

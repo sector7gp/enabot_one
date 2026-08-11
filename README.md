@@ -47,18 +47,24 @@ puerto UART0 en vez del USB-C vas a necesitar un adaptador USB-serie aparte.
 1. Al bootear, el ESP32 crea una red WiFi abierta llamada `EnaBot-Setup`.
 2. Conectate desde el celular/PC. Debería aparecer el popup de "portal
    cautivo" solo; si no, abrí `http://192.168.4.1/` a mano.
-3. Elegí cualquier grabación de voz del celular (m4a de Voice Memos en
-   iPhone, mp3, wav, lo que sea) de hasta 20 segundos. La propia página la
-   convierte a WAV mono 16 kHz **en el navegador** (Web Audio API decodifica
-   el archivo original y lo re-encodea) antes de subirla — el ESP32 nunca
-   tiene que lidiar con decodificar AAC/MP3.
-4. Debajo del formulario hay un reproductor (`<audio controls>`) para
-   escuchar en el celular lo que quedó guardado, sin tener que ir hasta el
-   botón físico.
-5. Apretá el boton: reproduce el ultimo archivo subido.
+3. El portal muestra **4 audios independientes** ("Audio 1".."Audio 4"),
+   cada uno con su propio formulario. Elegí cualquier grabación de voz del
+   celular (m4a de Voice Memos en iPhone, mp3, wav, lo que sea) de hasta 20
+   segundos por audio. La propia página la convierte a WAV mono 16 kHz **en
+   el navegador** (Web Audio API decodifica el archivo original y lo
+   re-encodea) antes de subirla — el ESP32 nunca tiene que lidiar con
+   decodificar AAC/MP3.
+4. Cada audio tiene su propio reproductor (`<audio controls>`) para
+   escucharlo en el celular sin ir hasta el botón físico.
+5. Apretá el botón: reproduce **Audio 1**. La próxima apretada reproduce
+   **Audio 2**, despues **Audio 3**, **Audio 4**, y vuelve a **Audio 1** —
+   un audio completo por apretada, en secuencia. Si algún slot esta vacio o
+   con un archivo invalido, se saltea solo (no te deja "mudo" en esa
+   apretada).
 
-Podés volver a entrar al portal en cualquier momento para reemplazar el
-audio (pisa el anterior).
+Podés volver a entrar al portal en cualquier momento para reemplazar
+cualquiera de los 4 (pisa el anterior de ese slot, los otros tres quedan
+igual).
 
 Si el selector de archivos del celular no te deja elegir el `.m4a`: el
 input ya pide explícitamente `audio/*, video/mp4, audio/mp4, .m4a, ...`
@@ -76,9 +82,17 @@ todo ese problema.
 
 ## Sobre los limites de memoria (resumen de la PoC)
 
-- Particion de datos (LittleFS): ~1.9 MB de una flash de 4 MB — un WAV de
-  20s mono a 16 kHz/16 bit pesa ~625 KB, entra holgado.
-- El limite real no es la memoria sino la velocidad del bus I2C hacia el
+- Particion de datos (LittleFS): ~2.625 MB de una flash de 4 MB (fisicos,
+  confirmado con `esptool flash_id` sobre la placa real) — repartidos entre
+  los 4 slots (`/audio0.wav`..`/audio3.wav`). Un WAV de 20s mono a 16
+  kHz/16 bit pesa ~625 KB, asi que los 4 al maximo ocupan ~2.5 MB, con
+  margen para el overhead de LittleFS. `AUDIO_MAX_BYTES` en `config.h`
+  limita cada slot individualmente a 700 KB para que un archivo grande no
+  se coma el espacio de los otros tres.
+- La particion de la app se redujo a 1.25 MB para hacerle lugar a esto
+  (el firmware ocupa ~1 MB, sigue con margen). Si agregás mucho codigo
+  nuevo y no compila por espacio, hay que rebalancear `partitions.csv`.
+- El limite real de calidad no es la memoria sino la velocidad del bus I2C hacia el
   DAC: por eso `AUDIO_MAX_SAMPLE_RATE` en `config.h` rechaza WAVs con
   sample rate mayor a 16 kHz al subirlos (a esa tasa el "fast mode write"
   del MCP4725 se sostiene sin problema; mas alto empieza a arriesgar
@@ -101,10 +115,10 @@ todo ese problema.
 ## Estructura
 
 ```
-include/config.h       pines, credenciales del AP, limites
+include/config.h        pines, credenciales del AP, cantidad de slots, limites
 src/MCP4725Fast.h       driver I2C fast-mode para el DAC
 src/AudioPlayer.h/.cpp  parser de WAV + tarea de reproduccion con timing por sample
-src/CaptivePortal.h/.cpp AP + DNS wildcard + servidor web + subida de archivo
-src/main.cpp            setup/loop, boton con debounce
-partitions.csv          tabla de particiones (app 2MB / littlefs ~1.9MB)
+src/CaptivePortal.h/.cpp AP + DNS wildcard + servidor web + subida por slot (/upload/N, /audio/N)
+src/main.cpp            setup/loop, boton con debounce + secuencia de slots
+partitions.csv          tabla de particiones (app 1.25MB / littlefs ~2.625MB)
 ```

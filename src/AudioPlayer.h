@@ -1,7 +1,11 @@
 #pragma once
 #include <FS.h>
+#include <WString.h>
 #include <stdint.h>
 #include "MCP4725Fast.h"
+
+// Ruta del archivo de audio para un slot (0-indexado): "/audio0.wav", etc.
+String audioSlotPath(uint8_t slot);
 
 struct WavInfo {
     uint16_t audioFormat;   // 1 = PCM

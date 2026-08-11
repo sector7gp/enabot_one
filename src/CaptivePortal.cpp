@@ -16,22 +16,33 @@ static WebServer server(80);
 static File uploadFile;
 static bool uploadOk = false;
 static size_t uploadBytes = 0;
+static int uploadSlot = -1;
 
-static String buildStatusHtml() {
-    if (!LittleFS.exists(AUDIO_FILE_PATH)) {
-        return "<p>No hay ningun audio cargado todavia.</p>";
+// Las URIs de subida/reproduccion terminan en el numero de slot
+// ("/upload/2", "/audio/2"): un solo handler sirve a los N slots.
+static int slotFromUri(const String &uri) {
+    if (uri.length() == 0) return -1;
+    char c = uri.charAt(uri.length() - 1);
+    if (c < '0' || c > '9') return -1;
+    int slot = c - '0';
+    return (slot >= 0 && slot < AUDIO_NUM_SLOTS) ? slot : -1;
+}
+
+static String buildSlotStatusHtml(uint8_t slot) {
+    String path = audioSlotPath(slot);
+    if (!LittleFS.exists(path)) {
+        return "<p>Vacio.</p>";
     }
-    File f = LittleFS.open(AUDIO_FILE_PATH, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     WavInfo info;
     String out;
     if (f && parseWavHeader(f, info)) {
         float seconds = (float)info.dataSize / (info.sampleRate * (info.bitsPerSample / 8));
-        out = "<p>Audio actual: " + String(f.size() / 1024) + " KB, " +
-              String(info.sampleRate) + " Hz, " + String(info.bitsPerSample) +
-              " bit, " + String(seconds, 1) + " s.</p>"
+        out = "<p>" + String(f.size() / 1024) + " KB, " + String(info.sampleRate) +
+              " Hz, " + String(seconds, 1) + " s.</p>"
               // cache-busting con millis() para no escuchar una version vieja
               // cacheada por el navegador despues de subir un archivo nuevo.
-              "<audio controls src='/audio.wav?t=" + String(millis()) + "'></audio>";
+              "<audio controls src='/audio/" + String(slot) + "?t=" + String(millis()) + "'></audio>";
     } else {
         out = "<p>Hay un archivo pero no es un WAV valido; subi uno nuevo.</p>";
     }
@@ -43,8 +54,8 @@ static String buildStatusHtml() {
 // entiende m4a/aac/mp3/wav nativamente (es el mismo codec que usa <audio>),
 // y OfflineAudioContext hace el resample + downmix a mono + recorte a
 // AUDIO_CLIENT_MAX_SECONDS en un solo paso. De ahi se arma un WAV PCM a
-// mano y se sube igual que antes por /upload. El ESP32 nunca decodifica
-// nada: solo recibe un WAV que ya cumple lo que parseWavHeader() espera.
+// mano y se sube por /upload/<slot>. El ESP32 nunca decodifica nada: solo
+// recibe un WAV que ya cumple lo que parseWavHeader() espera.
 static const char PAGE_SCRIPT[] =
     "<script>"
     "const TARGET_RATE=" AUDIO_STR(AUDIO_CLIENT_SAMPLE_RATE) ";"
@@ -82,23 +93,27 @@ static const char PAGE_SCRIPT[] =
       "}"
       "return encodeWav(pcm,TARGET_RATE);"
     "}"
-    "document.getElementById('audioForm').addEventListener('submit',async function(e){"
-      "e.preventDefault();"
-      "const input=document.getElementById('audioFile');"
-      "const status=document.getElementById('uploadStatus');"
-      "if(!input.files.length)return;"
-      "try{"
-        "status.textContent='Convirtiendo...';"
-        "const wav=await convertToWav(input.files[0]);"
-        "status.textContent='Subiendo...';"
-        "const fd=new FormData();"
-        "fd.append('audio',wav,'audio.wav');"
-        "const resp=await fetch('/upload',{method:'POST',body:fd});"
-        "const text=await resp.text();"
-        "status.innerHTML=text;"
-      "}catch(err){"
-        "status.textContent='Error al convertir/subir: '+err.message;"
-      "}"
+    "document.querySelectorAll('.slot').forEach(function(box){"
+      "const slot=box.dataset.slot;"
+      "const form=box.querySelector('.audioForm');"
+      "const input=box.querySelector('.audioFile');"
+      "const status=box.querySelector('.uploadStatus');"
+      "form.addEventListener('submit',async function(e){"
+        "e.preventDefault();"
+        "if(!input.files.length)return;"
+        "try{"
+          "status.textContent='Convirtiendo...';"
+          "const wav=await convertToWav(input.files[0]);"
+          "status.textContent='Subiendo...';"
+          "const fd=new FormData();"
+          "fd.append('audio',wav,'audio.wav');"
+          "const resp=await fetch('/upload/'+slot,{method:'POST',body:fd});"
+          "const text=await resp.text();"
+          "status.innerHTML=text;"
+        "}catch(err){"
+          "status.textContent='Error al convertir/subir: '+err.message;"
+        "}"
+      "});"
     "});"
     "</script>";
 
@@ -108,22 +123,34 @@ static String buildIndexHtml() {
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>EnaBot Audio Setup</title>"
         "<style>body{font-family:sans-serif;max-width:420px;margin:32px auto;padding:0 16px}"
-        "input[type=submit]{padding:8px 16px}</style></head><body>"
-        "<h2>EnaBot &mdash; Subir audio</h2>"
-        "<p>Elegí una grabacion de voz del celular (m4a, mp3, wav, lo que sea) de "
-        "hasta " + String(AUDIO_CLIENT_MAX_SECONDS) + " segundos. Se convierte sola a mono "
-        + String(AUDIO_CLIENT_SAMPLE_RATE) + " Hz en el navegador antes de subirla.</p>"
-        "<form id='audioForm' enctype='multipart/form-data'>"
-        // accept amplio a proposito: en varios celulares un .m4a (Voice
-        // Memos de iPhone, etc.) no aparece seleccionable si el filtro es
-        // solo 'audio/*', porque el picker lo clasifica como MIME
-        // audio/mp4 o incluso video/mp4 (comparte contenedor con MP4).
-        "<input id='audioFile' type='file' name='audio' "
-        "accept='audio/*,video/mp4,audio/mp4,audio/x-m4a,.m4a,.mp3,.wav,.aac,.ogg,.caf' "
-        "required><br><br>"
-        "<input type='submit' value='Convertir y subir'></form>"
-        "<p id='uploadStatus'></p>";
-    html += buildStatusHtml();
+        "input[type=submit]{padding:8px 16px}"
+        ".slot{border:1px solid #ccc;border-radius:8px;padding:12px;margin:16px 0}"
+        "audio{width:100%;margin-top:4px}</style></head><body>"
+        "<h2>EnaBot &mdash; Subir audios</h2>"
+        "<p>El boton reproduce estos " + String(AUDIO_NUM_SLOTS) +
+        " audios en secuencia, uno por cada apretada. Cada uno puede ser "
+        "cualquier grabacion del celular (m4a, mp3, wav...) de hasta " +
+        String(AUDIO_CLIENT_MAX_SECONDS) + " segundos; se convierte sola a "
+        "mono " + String(AUDIO_CLIENT_SAMPLE_RATE) + " Hz en el navegador antes de subirla.</p>";
+
+    for (uint8_t slot = 0; slot < AUDIO_NUM_SLOTS; slot++) {
+        html += "<div class='slot' data-slot='" + String(slot) + "'>"
+                "<h3>Audio " + String(slot + 1) + "</h3>"
+                "<form class='audioForm' enctype='multipart/form-data'>"
+                // accept amplio a proposito: en varios celulares un .m4a
+                // (Voice Memos de iPhone, etc.) no aparece seleccionable
+                // si el filtro es solo 'audio/*', porque el picker lo
+                // clasifica como MIME audio/mp4 o video/mp4 (mismo
+                // contenedor que un MP4 de video).
+                "<input class='audioFile' type='file' name='audio' "
+                "accept='audio/*,video/mp4,audio/mp4,audio/x-m4a,.m4a,.mp3,.wav,.aac,.ogg,.caf' "
+                "required><br><br>"
+                "<input type='submit' value='Convertir y subir'></form>"
+                "<p class='uploadStatus'></p>";
+        html += buildSlotStatusHtml(slot);
+        html += "</div>";
+    }
+
     html += PAGE_SCRIPT;
     html += "</body></html>";
     return html;
@@ -147,37 +174,46 @@ static void handleFileUpload() {
     HTTPUpload &upload = server.upload();
 
     if (upload.status == UPLOAD_FILE_START) {
+        uploadSlot = slotFromUri(server.uri());
         uploadBytes = 0;
         uploadOk = false;
-        if (LittleFS.exists(AUDIO_FILE_PATH)) LittleFS.remove(AUDIO_FILE_PATH);
-        uploadFile = LittleFS.open(AUDIO_FILE_PATH, FILE_WRITE);
+        if (uploadSlot < 0) return;
+        String path = audioSlotPath(uploadSlot);
+        if (LittleFS.exists(path)) LittleFS.remove(path);
+        uploadFile = LittleFS.open(path, FILE_WRITE);
     } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (uploadSlot < 0) return;
         if (uploadFile) {
             uploadBytes += upload.currentSize;
             if (uploadBytes > AUDIO_MAX_BYTES) {
                 uploadFile.close();
-                LittleFS.remove(AUDIO_FILE_PATH);
+                LittleFS.remove(audioSlotPath(uploadSlot));
                 return; // la validacion final en UPLOAD_FILE_END lo marcara invalido
             }
             uploadFile.write(upload.buf, upload.currentSize);
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         if (uploadFile) uploadFile.close();
+        if (uploadSlot < 0) return;
 
-        File check = LittleFS.open(AUDIO_FILE_PATH, FILE_READ);
+        String path = audioSlotPath(uploadSlot);
+        File check = LittleFS.open(path, FILE_READ);
         WavInfo info;
         uploadOk = check && parseWavHeader(check, info);
         if (check) check.close();
-        if (!uploadOk && LittleFS.exists(AUDIO_FILE_PATH)) LittleFS.remove(AUDIO_FILE_PATH);
+        if (!uploadOk && LittleFS.exists(path)) LittleFS.remove(path);
     }
 }
 
 static void handleServeAudio() {
-    if (!LittleFS.exists(AUDIO_FILE_PATH)) {
+    int slot = slotFromUri(server.uri());
+    String path = slot >= 0 ? audioSlotPath(slot) : String();
+
+    if (slot < 0 || !LittleFS.exists(path)) {
         server.send(404, "text/plain", "No hay audio cargado");
         return;
     }
-    File f = LittleFS.open(AUDIO_FILE_PATH, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     server.streamFile(f, "audio/wav");
     f.close();
 }
@@ -198,8 +234,10 @@ void captivePortalBegin() {
     dnsServer.start(53, "*", AP_IP);
 
     server.on("/", HTTP_GET, handleRoot);
-    server.on("/upload", HTTP_POST, handleUploadResult, handleFileUpload);
-    server.on("/audio.wav", HTTP_GET, handleServeAudio);
+    for (uint8_t slot = 0; slot < AUDIO_NUM_SLOTS; slot++) {
+        server.on("/upload/" + String(slot), HTTP_POST, handleUploadResult, handleFileUpload);
+        server.on("/audio/" + String(slot), HTTP_GET, handleServeAudio);
+    }
     server.onNotFound(handleNotFound);
     server.begin();
 }

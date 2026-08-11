@@ -4,6 +4,10 @@
 #include <string.h>
 #include "config.h"
 
+String audioSlotPath(uint8_t slot) {
+    return "/audio" + String(slot) + ".wav";
+}
+
 bool parseWavHeader(File &f, WavInfo &info) {
     f.seek(0);
     uint8_t hdr[12];
