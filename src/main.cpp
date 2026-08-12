@@ -216,7 +216,9 @@ void setup() {
 void loop() {
     if (portalActive) {
         captivePortalLoop();
-        if (millis() - portalStartMs > PORTAL_TIMEOUT_MS) {
+        // Nunca cortar el WiFi con un OTA a medio camino: quedaria una
+        // imagen incompleta en flash.
+        if (millis() - portalStartMs > PORTAL_TIMEOUT_MS && !captivePortalOtaInProgress()) {
             captivePortalEnd();
             portalActive = false;
         }

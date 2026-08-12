@@ -68,6 +68,17 @@
 // Si el alcance quedara corto, subir a WIFI_POWER_11dBm o mas.
 #define WIFI_AP_TX_POWER WIFI_POWER_8_5dBm
 
+// --- mDNS y OTA (solo viven mientras el portal esta levantado) ---
+// Con mDNS el portal se abre en http://enabot.local/ ademas de por IP.
+#define MDNS_HOSTNAME "enabot"
+
+// Clave para actualizar el firmware por OTA. Vacio = sin clave.
+// La red es abierta, asi que sin clave cualquiera con alcance podria
+// flashear la placa mientras el portal este activo. Lo que protege hoy es
+// que el portal exige apretar el boton fisico y se apaga a los 10 min; si
+// esto va a andar en un lugar publico, poner una clave aca.
+#define OTA_PASSWORD ""
+
 // --- Almacenamiento del audio ---
 // 4 slots independientes ("/audio0.wav" .. "/audio3.wav"), cada uno con el
 // mismo limite de tamano/duracion. El boton los reproduce en secuencia.

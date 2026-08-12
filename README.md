@@ -64,7 +64,8 @@ puerto UART0 en vez del USB-C vas a necesitar un adaptador USB-serie aparte.
    entró: reintentá. En un arranque normal (sin botón) la radio no se
    enciende nunca: solo botón → audio.
 2. Conectate desde el celular/PC. Debería aparecer el popup de "portal
-   cautivo" solo; si no, abrí `http://192.168.4.1/` a mano.
+   cautivo" solo; si no, abrí `http://enabot.local/` (o `http://192.168.4.1/`)
+   a mano.
    El portal **se apaga solo a los 10 minutos** (`PORTAL_TIMEOUT_MS` en
    `config.h`) y apaga la radio con él. Para volver a entrar hay que
    reiniciar de nuevo y apretar el botón.
@@ -106,16 +107,23 @@ todo ese problema.
 
 ## Sobre los limites de memoria (resumen de la PoC)
 
-- Particion de datos (LittleFS): ~2.625 MB de una flash de 4 MB (fisicos,
-  confirmado con `esptool flash_id` sobre la placa real) — repartidos entre
-  los 4 slots (`/audio0.wav`..`/audio3.wav`). Un WAV de 20s mono a 16
-  kHz/16 bit pesa ~625 KB, asi que los 4 al maximo ocupan ~2.5 MB, con
-  margen para el overhead de LittleFS. `AUDIO_MAX_BYTES` en `config.h`
-  limita cada slot individualmente a 700 KB para que un archivo grande no
-  se coma el espacio de los otros tres.
-- La particion de la app se redujo a 1.25 MB para hacerle lugar a esto
-  (el firmware ocupa ~1 MB, sigue con margen). Si agregás mucho codigo
-  nuevo y no compila por espacio, hay que rebalancear `partitions.csv`.
+- Flash total: 4 MB fisicos (confirmado con `esptool flash_id` sobre la
+  placa real). Con OTA hay que repartirlo entre **dos** particiones de app
+  de 1.1875 MB c/u y el filesystem.
+- Particion de datos (LittleFS): **1.5 MB** para los 4 slots
+  (`/audio0.wav`..`/audio3.wav`). Antes de OTA eran 2.625 MB.
+- **Esto acota la duracion total.** Un WAV de 20s mono a 16 kHz/16 bit pesa
+  ~640 KB, asi que ya no entran 4 clips de 20s (serian ~2.5 MB). Si los 4
+  slots se usan parejos, el techo practico es de ~11s cada uno. Se pueden
+  combinar: uno largo y tres cortos entra sin problema. El limite sigue
+  siendo por archivo (`AUDIO_MAX_BYTES`, 700 KB) y ademas el total real de
+  la particion.
+- El firmware con OTA+mDNS ocupa ~1.01 MB de los 1.1875 MB de la particion
+  de app (85%). Si se agrega mucho codigo y no entra, hay que rebalancear
+  `partitions.csv` — sacandole al filesystem.
+- **Cambiar `partitions.csv` borra los audios cargados**, porque se mueve el
+  offset del filesystem. Conviene bajarlos antes desde el portal
+  (`/audio/0`..`/audio/3`) y volver a subirlos despues.
 - Los 16 kHz de `AUDIO_CLIENT_SAMPLE_RATE` no son un techo del hardware: el
   I2S por DMA aguanta bastante mas. Es un compromiso entre calidad y
   espacio (a 16 kHz/16 bit cada segundo son 32 KB). Si lo subis, revisa
@@ -152,6 +160,38 @@ todo ese problema.
   declaracion del struct, lo que en C es legal pero en C++ es error de
   compilacion. Por eso `I2sOut.cpp` asigna los campos de a uno, con los
   mismos valores que usaria el macro para ESP32-S3.
+
+## mDNS y actualizacion por WiFi (OTA)
+
+Ambos **solo existen mientras el portal esta levantado**, asi que el modo
+normal (sin radio) no paga nada por tenerlos.
+
+**mDNS:** el portal responde tambien en `http://enabot.local/`, sin tener
+que acordarse de la IP. El hostname sale de `MDNS_HOSTNAME` en `config.h`.
+
+**OTA:** se puede actualizar el firmware sin cable. Hay que levantar el
+portal (reiniciar apretando el boton), conectarse a `EnaBot-Setup` y:
+
+```bash
+pio run -e esp32-s3-supermini-ota -t upload
+```
+
+Detalles que importan:
+
+- **OTA obliga a tener dos particiones de app.** La imagen nueva se escribe
+  en la que no esta corriendo y recien al final se cambia el puntero de
+  arranque; por eso no se puede "actualizar sobre si misma". Eso cuesta
+  ~1.19MB de flash, que salieron del espacio de audio: la particion de
+  datos paso de 2.625MB a **1.5MB** (ver mas abajo).
+- **El timeout del portal no corta un OTA en curso**
+  (`captivePortalOtaInProgress()`). Cortar el WiFi a mitad de un flasheo
+  dejaria una imagen incompleta.
+- **Sin clave por defecto** (`OTA_PASSWORD` vacio en `config.h`). La red es
+  abierta, asi que mientras el portal este activo cualquiera con alcance
+  podria flashear la placa. Hoy lo que protege es que el portal exige
+  apretar el boton fisico y se apaga a los 10 minutos. Para algo que vaya a
+  un lugar publico, poner una clave ahi y agregar
+  `upload_flags = --auth=...` al entorno de OTA.
 
 ## Consumo y bateria
 

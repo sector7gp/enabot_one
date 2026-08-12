@@ -2,6 +2,8 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <LittleFS.h>
 #include <string.h>
 #include "config.h"
@@ -17,6 +19,7 @@ static File uploadFile;
 static bool uploadOk = false;
 static size_t uploadBytes = 0;
 static int uploadSlot = -1;
+static bool otaInProgress = false;
 
 // Las URIs de subida/reproduccion terminan en el numero de slot
 // ("/upload/2", "/audio/2"): un solo handler sirve a los N slots.
@@ -226,6 +229,45 @@ static void handleNotFound() {
     server.send(302, "text/plain", "");
 }
 
+// mDNS y OTA solo tienen sentido con el WiFi levantado, asi que viven y
+// mueren con el portal. Asi el modo normal (sin radio) no paga nada por
+// tenerlos compilados.
+static void startNetServices() {
+    if (MDNS.begin(MDNS_HOSTNAME)) {
+        MDNS.addService("http", "tcp", 80);
+        DBG_PRINTF("mDNS activo: http://%s.local/\n", MDNS_HOSTNAME);
+    } else {
+        DBG_PRINTLN("mDNS: no pude arrancar");
+    }
+
+    ArduinoOTA.setHostname(MDNS_HOSTNAME);
+    if (strlen(OTA_PASSWORD) > 0) {
+        ArduinoOTA.setPassword(OTA_PASSWORD);
+    }
+
+    // El flag frena el timeout del portal: cortar el WiFi a mitad de un
+    // flasheo dejaria la placa con una imagen incompleta.
+    ArduinoOTA.onStart([]() {
+        otaInProgress = true;
+        // El filesystem tiene que estar desmontado si lo que se actualiza es
+        // justamente el filesystem; para el firmware no molesta cerrarlo.
+        if (ArduinoOTA.getCommand() == U_SPIFFS) {
+            LittleFS.end();
+        }
+        DBG_PRINTLN("OTA: arranca la actualizacion");
+    });
+    ArduinoOTA.onEnd([]() {
+        otaInProgress = false;
+        DBG_PRINTLN("OTA: terminada, reiniciando");
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        otaInProgress = false;
+        DBG_PRINTF("OTA: error %u\n", error);
+    });
+    ArduinoOTA.begin();
+    DBG_PRINTLN("OTA escuchando");
+}
+
 void captivePortalBegin() {
     WiFi.mode(WIFI_AP);
     bool configOk = WiFi.softAPConfig(AP_IP, AP_IP, AP_SUBNET);
@@ -243,6 +285,7 @@ void captivePortalBegin() {
     (void)apOk;
 
     dnsServer.start(53, "*", AP_IP);
+    startNetServices();
 
     server.on("/", HTTP_GET, handleRoot);
     for (uint8_t slot = 0; slot < AUDIO_NUM_SLOTS; slot++) {
@@ -254,11 +297,18 @@ void captivePortalBegin() {
 }
 
 void captivePortalLoop() {
+    ArduinoOTA.handle();
     dnsServer.processNextRequest();
     server.handleClient();
 }
 
+bool captivePortalOtaInProgress() {
+    return otaInProgress;
+}
+
 void captivePortalEnd() {
+    ArduinoOTA.end();
+    MDNS.end();
     server.stop();
     dnsServer.stop();
     WiFi.softAPdisconnect(true); // true = ademas apaga el AP
