@@ -162,6 +162,10 @@ void AudioPlayer::taskFunc(void *param) {
             } else {
                 s = (int16_t)(((int)rawBuf[i] - 128) << 8); // 8 bit sin signo -> 16 bit con signo
             }
+            // Volumen: se escala en 32 bits para no desbordar antes de
+            // dividir (s * 100 se sale de un int16).
+            s = (int16_t)(((int32_t)s * AUDIO_VOLUME_PERCENT) / 100);
+
             // El MAX98357A puede estar cableado para tomar L, R o (L+R)/2
             // segun su pin SD/MODE; mandando el mismo valor en ambos
             // canales suena correcto sin importar cual sea.

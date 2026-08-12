@@ -230,9 +230,15 @@ void captivePortalBegin() {
     WiFi.mode(WIFI_AP);
     bool configOk = WiFi.softAPConfig(AP_IP, AP_IP, AP_SUBNET);
     bool apOk = WiFi.softAP(AP_SSID, (strlen(AP_PASSWORD) > 0) ? AP_PASSWORD : nullptr);
-    DBG_PRINTF("softAPConfig: %s, softAP: %s, IP: %s\n",
+    // Potencia de transmision reducida a proposito. El AP solo tiene que
+    // llegar a un celular apoyado al lado, no cubrir la casa, y bajarla
+    // recorta bastante el pico de corriente de la radio — que es justo el
+    // recurso escaso cuando comparte alimentacion con el amplificador.
+    WiFi.setTxPower(WIFI_AP_TX_POWER);
+
+    DBG_PRINTF("softAPConfig: %s, softAP: %s, IP: %s, txPower=%d\n",
                configOk ? "OK" : "FALLO", apOk ? "OK" : "FALLO",
-               WiFi.softAPIP().toString().c_str());
+               WiFi.softAPIP().toString().c_str(), (int)WiFi.getTxPower());
     (void)configOk;
     (void)apOk;
 

@@ -57,14 +57,19 @@ puerto UART0 en vez del USB-C vas a necesitar un adaptador USB-serie aparte.
 
 ## Uso
 
-1. **Encendé la placa manteniendo el botón apretado.** Recién ahí el ESP32
-   crea la red WiFi abierta `EnaBot-Setup`. En un arranque normal (sin el
-   botón) la radio no se enciende nunca: solo botón → audio.
+1. **Reiniciá la placa y apretá el botón dentro de los primeros 5 segundos**
+   (`PORTAL_TRIGGER_WINDOW_MS`); también sirve arrancar con el botón ya
+   apretado. Un **pitido corto** confirma que entró en modo configuración y
+   que se creó la red WiFi abierta `EnaBot-Setup`. Si no hay pitido, no
+   entró: reintentá. En un arranque normal (sin botón) la radio no se
+   enciende nunca: solo botón → audio.
 2. Conectate desde el celular/PC. Debería aparecer el popup de "portal
    cautivo" solo; si no, abrí `http://192.168.4.1/` a mano.
    El portal **se apaga solo a los 10 minutos** (`PORTAL_TIMEOUT_MS` en
    `config.h`) y apaga la radio con él. Para volver a entrar hay que
-   reiniciar de nuevo con el botón apretado.
+   reiniciar de nuevo y apretar el botón.
+   El volumen de salida se ajusta con `AUDIO_VOLUME_PERCENT` (50% por
+   defecto).
 3. El portal muestra **4 audios independientes** ("Audio 1".."Audio 4"),
    cada uno con su propio formulario. Elegí cualquier grabación de voz del
    celular (m4a de Voice Memos en iPhone, mp3, wav, lo que sea) de hasta 20
@@ -191,29 +196,52 @@ el flag encendido, al arrancar se imprime:
 
 ## Si el WiFi/portal deja de aparecer
 
-Durante el desarrollo aparecio un sintoma confuso: `WiFi.softAP()` devolvia
-OK y el firmware seguia corriendo normal, pero **el AP no irradiaba** y la
-red no aparecia en ningun scan. No era un bug del portal (se verifico
-sirviendo la pagina y descargando los 4 WAV completos por HTTP).
+Sintoma: `WiFi.softAP()` devuelve OK y el firmware sigue corriendo normal,
+pero **el AP no irradia** y la red no aparece en ningun scan. No es un bug
+del portal (se verifico sirviendo la pagina y descargando los 4 WAV
+completos por HTTP).
 
-Lo que aislo el problema fue mover el I2S a **pines al aire**, sin conectar
-al ampli: asi el WiFi funcionaba perfecto; volviendo a los pines del
-MAX98357A, se caia. Mismo periferico y mismo driver, con lo cual el
-problema no era de firmware sino de la interaccion electrica con el ampli
-— tipicamente consumo hundiendo el riel de 3V3 (la radio pide picos de
-~300 mA y el regulador de la Super Mini es chico), o ruido del Class-D
-acoplandose a la antena.
+**La causa es el orden de inicializacion.** El AP tiene que levantarse
+ANTES de tocar el I2S. Si se inicializa el I2S primero — y peor todavia si
+se hace sonar algo por el ampli antes de arrancar el AP — el AP queda
+"arriba" segun el driver pero nunca sale al aire. En `setup()` el orden
+correcto es:
 
-Si vuelve a pasar, chequear en este orden:
+1. `captivePortalBegin()` (AP arriba)
+2. `i2sOutBegin()`
+3. recien ahi cualquier sonido (el pitido de confirmacion, por ejemplo)
 
-1. Alimentar el MAX98357A desde **5V (VIN/VBUS)**, no desde el pin 3V3 del
-   ESP.
-2. Capacitor de **470–1000 µF** entre VIN y GND, lo mas pegado posible al
-   modulo, para absorber los picos.
-3. Alejar el parlante y sus cables de la antena del ESP; mantenerlos
-   cortos.
-4. Confirmar que el pin **SD/MODE** no quedo flotando.
-5. Mirar el serial: si aparece `BROWNOUT`, es alimentacion, seguro.
+Esto se rompio una vez al agregar el pitido de confirmacion, que obligaba a
+inicializar el I2S antes del AP. Con el orden correcto, el pitido suena
+despues del AP y no lo afecta.
+
+Lo que ayudo a aislarlo en su momento fue mover el I2S a **pines al aire**,
+sin conectar al ampli: asi el WiFi funcionaba siempre. Eso descarto un bug
+del driver y apunto a la interaccion con el ampli/el orden de arranque.
+
+Como precaucion adicional, el AP arranca con la potencia de transmision
+bajada (`WIFI_AP_TX_POWER`, 8.5 dBm): al celular que va a estar al lado le
+sobra, y reduce el pico de corriente de la radio. Si el alcance quedara
+corto, subirla ahi.
+
+Si aun asi no aparece, entonces si revisar la parte electrica: alimentar el
+MAX98357A desde **5V** en vez del pin 3V3 del ESP, ponerle un capacitor de
+470-1000 uF entre VIN y GND pegado al modulo, y alejar el parlante de la
+antena.
+
+## Ruido y disparos falsos del boton
+
+El cable del boton corre al lado de las lineas de I2S (BCLK son ~512 kHz) y
+el pull-up interno del ESP es debil (~45 kOhm), asi que la linea es de alta
+impedancia y se le inducen glitches. Con una interrupcion por flanco eso se
+traducia en **reproducciones disparandose solas, una atras de otra**.
+
+Por eso el boton **se sondea, no se usa `attachInterrupt`**: solo cuenta
+como pulsacion si el pin se queda estable en `LOW` durante
+`BUTTON_STABLE_MS` (30 ms). Un glitch dura microsegundos y queda
+descartado. Si aun asi aparecieran disparos falsos, lo que corresponde es
+un pull-up externo de 10 kOhm a 3V3 en la linea del boton y/o un capacitor
+de 100 nF a GND.
 
 ## Estructura
 
